@@ -1,26 +1,30 @@
 ----------------------------- MODULE Heartbeat -----------------------------
 EXTENDS Integers, Sequences, TLC, FiniteSets
-CONSTANTS N, Procs, NULL, Data
-ASSUME Procs = 1..N
+CONSTANTS N, NULL, Data
+
 ASSUME NULL \notin Data
+ASSUME N \in Nat \ {0}
+ASSUME N > 2
+
+Procs == 1..N
 
 (*--algorithm heartbeat_reliable
 
 variables
   procs = {i: i \in 1..N};
   all_procs = {i: i \in 0..N};
-  queue = [x \in Procs |-> <<>>];
+  queue = [x \in procs |-> <<>>];
   seq = [x \in all_procs |-> 0];
   deliver = [x \in all_procs |-> {}];
-  init_message = "init_message";
+  init_message = CHOOSE x \in Data: TRUE;
   broadcast = [x \in all_procs |-> {}];
-  
+
   
 define
-  Neighbors(s_arg) == Procs \ {s_arg}
+  Neighbors(s_arg) == procs \ {s_arg}
   (* Invariants *)
-  AllDelivered == \A p \in Procs: init_message \in deliver[p]
-  AllDone == \A t \in Procs: pc[t] = "Done"
+  AllDelivered == \A p \in procs: init_message \in deliver[p]
+  AllDone == \A t \in procs: pc[t] = "Done"
   DeliveredAtEnd == <>AllDelivered
   (* Section 5.2 Reliable Broadcast *)
   Validity == \E p \in Procs: init_message \in broadcast[p] => <>(init_message \in deliver[p])
@@ -59,7 +63,7 @@ begin
     await queue[self] /= <<>>;
   ReadProcess:
     while queue[self] /= <<>> do
-      local := Head(queue[self]) || 
+      local := Head(queue[self]);
       queue[self] := Tail(queue[self]);
       Recieve:
         if local.data \notin deliver[self] then
@@ -67,7 +71,7 @@ begin
           q := 1;
           SendAfterRec:
             while q <= N do
-              if q  /= self then
+              if q # self then
                 send(self, q, local.data);
               end if;
               q := q + 1;
@@ -78,14 +82,14 @@ end process;
  
  
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "18cb897e" /\ chksum(tla) = "e23d1f3d")
+\* BEGIN TRANSLATION (chksum(pcal) = "2153317c" /\ chksum(tla) = "3ba10f73")
 VARIABLES procs, all_procs, queue, seq, deliver, init_message, broadcast, pc
 
 (* define statement *)
-Neighbors(s_arg) == Procs \ {s_arg}
+Neighbors(s_arg) == procs \ {s_arg}
 
-AllDelivered == \A p \in Procs: init_message \in deliver[p]
-AllDone == \A t \in Procs: pc[t] = "Done"
+AllDelivered == \A p \in procs: init_message \in deliver[p]
+AllDone == \A t \in procs: pc[t] = "Done"
 DeliveredAtEnd == <>AllDelivered
 
 Validity == \E p \in Procs: init_message \in broadcast[p] => <>(init_message \in deliver[p])
@@ -102,10 +106,10 @@ ProcSet == ({0}) \cup (Procs)
 Init == (* Global variables *)
         /\ procs = {i: i \in 1..N}
         /\ all_procs = {i: i \in 0..N}
-        /\ queue = [x \in Procs |-> <<>>]
+        /\ queue = [x \in procs |-> <<>>]
         /\ seq = [x \in all_procs |-> 0]
         /\ deliver = [x \in all_procs |-> {}]
-        /\ init_message = "init_message"
+        /\ init_message = (CHOOSE x \in Data: TRUE)
         /\ broadcast = [x \in all_procs |-> {}]
         (* Process sender *)
         /\ q_s = [self \in {0} |-> 1]
@@ -150,8 +154,8 @@ ReadWait(self) == /\ pc[self] = "ReadWait"
 
 ReadProcess(self) == /\ pc[self] = "ReadProcess"
                      /\ IF queue[self] /= <<>>
-                           THEN /\ /\ local' = [local EXCEPT ![self] = Head(queue[self])]
-                                   /\ queue' = [queue EXCEPT ![self] = Tail(queue[self])]
+                           THEN /\ local' = [local EXCEPT ![self] = Head(queue[self])]
+                                /\ queue' = [queue EXCEPT ![self] = Tail(queue[self])]
                                 /\ pc' = [pc EXCEPT ![self] = "Recieve"]
                            ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
                                 /\ UNCHANGED << queue, local >>
@@ -170,7 +174,7 @@ Recieve(self) == /\ pc[self] = "Recieve"
 
 SendAfterRec(self) == /\ pc[self] = "SendAfterRec"
                       /\ IF q[self] <= N
-                            THEN /\ IF q[self]  /= self
+                            THEN /\ IF q[self] # self
                                        THEN /\ /\ broadcast' = [broadcast EXCEPT ![self] = broadcast[self] \union {(local[self].data)}]
                                                /\ queue' = [queue EXCEPT ![q[self]] = Append(queue[q[self]], [from |-> self, seq |-> seq[self], data |-> (local[self].data)])]
                                                /\ seq' = [seq EXCEPT ![self] = seq[self] + 1]
@@ -206,5 +210,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 =============================================================================
 \* Modification History
-\* Last modified Thu Sep 29 23:26:41 EDT 2022 by adamwespiser
+\* Last modified Thu Sep 29 23:59:22 EDT 2022 by adamwespiser
 \* Created Wed Sep 28 23:14:35 EDT 2022 by adamwespiser

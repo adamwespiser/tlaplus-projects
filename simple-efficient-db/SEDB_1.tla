@@ -14,6 +14,7 @@ ASSUME KEYS > 0
 variables
   \* processes for database writers
   procs = {i: i \in 0..N},
+  keys = 0..KEYS,
   \* three tiered locking strategy
   shared_lock = [i \in procs|-> FALSE],
   update_lock = [i \in procs |-> FALSE],
@@ -21,7 +22,7 @@ variables
   \* our state
   wal = <<>>,
   version = 0,
-  memory = [m \in procs |-> 0],
+  memory = [m \in keys |-> 0],
   file_system = [k \in procs |-> memory],
   tick = 0;
 
@@ -34,7 +35,7 @@ define
   ReadOps == [op: {"read"}, key: Keys, value: {"none"}]
   Ops ==  ReadOps \union UpdateOps \union WriteOps
   LockEmpty(lock) == \A x \in DOMAIN lock: ~lock[x]
-  SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ x = s
+  SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ (x = s)
 end define;
 
 
@@ -70,7 +71,7 @@ macro rebuild_from_disk() begin
 end macro;
 
 
-process db_process \in 0..N
+fair+ process db_process \in 0..N
 variables current_cmd = "";
 begin
   GetCommand:
@@ -81,7 +82,7 @@ begin
         Read:
             await LockEmpty(exclusive_lock);
             shared_lock[self] := TRUE;
-    else 
+    else
         UpdateLock:
             await LockEmpty(update_lock) /\ LockEmpty(exclusive_lock);
             update_lock[self] := TRUE;
@@ -91,9 +92,9 @@ begin
         WriteFS:
             tick := tick +1;
             write_to_wal(current_cmd);
-        ExclusiveLock:
-            await LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock);
-            exclusive_lock[self] := TRUE;
+ \*       ExclusiveLock:
+ \*           await LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock);
+ \*           exclusive_lock[self] := TRUE;
         ExecuteFlush:
             flush_to_disk();
     end if;
@@ -107,8 +108,8 @@ end process;
 
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "56b77516" /\ chksum(tla) = "c9643ddf")
-VARIABLES procs, shared_lock, update_lock, exclusive_lock, wal, version, 
+\* BEGIN TRANSLATION (chksum(pcal) = "9e2069dd" /\ chksum(tla) = "5e7ec91f")
+VARIABLES procs, keys, shared_lock, update_lock, exclusive_lock, wal, version, 
           memory, file_system, tick, pc
 
 (* define statement *)
@@ -119,23 +120,24 @@ UpdateOps == [op: {"update"}, key: Keys, value: {"inc", "dec"}]
 ReadOps == [op: {"read"}, key: Keys, value: {"none"}]
 Ops ==  ReadOps \union UpdateOps \union WriteOps
 LockEmpty(lock) == \A x \in DOMAIN lock: ~lock[x]
-SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ x = s
+SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ (x = s)
 
 VARIABLE current_cmd
 
-vars == << procs, shared_lock, update_lock, exclusive_lock, wal, version, 
-           memory, file_system, tick, pc, current_cmd >>
+vars == << procs, keys, shared_lock, update_lock, exclusive_lock, wal, 
+           version, memory, file_system, tick, pc, current_cmd >>
 
 ProcSet == (0..N)
 
 Init == (* Global variables *)
         /\ procs = {i: i \in 0..N}
+        /\ keys = 0..KEYS
         /\ shared_lock = [i \in procs|-> FALSE]
         /\ update_lock = [i \in procs |-> FALSE]
         /\ exclusive_lock = [i \in procs |-> FALSE]
         /\ wal = <<>>
         /\ version = 0
-        /\ memory = [m \in procs |-> 0]
+        /\ memory = [m \in keys |-> 0]
         /\ file_system = [k \in procs |-> memory]
         /\ tick = 0
         (* Process db_process *)
@@ -148,7 +150,7 @@ GetCommand(self) == /\ pc[self] = "GetCommand"
                     /\ IF current_cmd'[self].op = "read"
                           THEN /\ pc' = [pc EXCEPT ![self] = "Read"]
                           ELSE /\ pc' = [pc EXCEPT ![self] = "UpdateLock"]
-                    /\ UNCHANGED << procs, shared_lock, update_lock, 
+                    /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
                                     exclusive_lock, wal, version, memory, 
                                     file_system, tick >>
 
@@ -156,15 +158,15 @@ Read(self) == /\ pc[self] = "Read"
               /\ LockEmpty(exclusive_lock)
               /\ shared_lock' = [shared_lock EXCEPT ![self] = TRUE]
               /\ pc' = [pc EXCEPT ![self] = "DropLocks"]
-              /\ UNCHANGED << procs, update_lock, exclusive_lock, wal, version, 
-                              memory, file_system, tick, current_cmd >>
+              /\ UNCHANGED << procs, keys, update_lock, exclusive_lock, wal, 
+                              version, memory, file_system, tick, current_cmd >>
 
 UpdateLock(self) == /\ pc[self] = "UpdateLock"
                     /\ LockEmpty(update_lock) /\ LockEmpty(exclusive_lock)
                     /\ update_lock' = [update_lock EXCEPT ![self] = TRUE]
                     /\ pc' = [pc EXCEPT ![self] = "WriteMemory"]
-                    /\ UNCHANGED << procs, shared_lock, exclusive_lock, wal, 
-                                    version, memory, file_system, tick, 
+                    /\ UNCHANGED << procs, keys, shared_lock, exclusive_lock, 
+                                    wal, version, memory, file_system, tick, 
                                     current_cmd >>
 
 WriteMemory(self) == /\ pc[self] = "WriteMemory"
@@ -181,32 +183,24 @@ WriteMemory(self) == /\ pc[self] = "WriteMemory"
                                       ELSE /\ TRUE
                                            /\ UNCHANGED memory
                      /\ pc' = [pc EXCEPT ![self] = "WriteFS"]
-                     /\ UNCHANGED << procs, shared_lock, update_lock, 
+                     /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
                                      exclusive_lock, wal, version, file_system, 
                                      current_cmd >>
 
 WriteFS(self) == /\ pc[self] = "WriteFS"
                  /\ tick' = tick +1
                  /\ wal' = Append(wal, current_cmd[self])
-                 /\ pc' = [pc EXCEPT ![self] = "ExclusiveLock"]
-                 /\ UNCHANGED << procs, shared_lock, update_lock, 
+                 /\ pc' = [pc EXCEPT ![self] = "ExecuteFlush"]
+                 /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
                                  exclusive_lock, version, memory, file_system, 
                                  current_cmd >>
-
-ExclusiveLock(self) == /\ pc[self] = "ExclusiveLock"
-                       /\ LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock)
-                       /\ exclusive_lock' = [exclusive_lock EXCEPT ![self] = TRUE]
-                       /\ pc' = [pc EXCEPT ![self] = "ExecuteFlush"]
-                       /\ UNCHANGED << procs, shared_lock, update_lock, wal, 
-                                       version, memory, file_system, tick, 
-                                       current_cmd >>
 
 ExecuteFlush(self) == /\ pc[self] = "ExecuteFlush"
                       /\ /\ file_system' = [file_system EXCEPT ![version] = memory]
                          /\ version' = version + 1
                          /\ wal' = <<>>
                       /\ pc' = [pc EXCEPT ![self] = "DropLocks"]
-                      /\ UNCHANGED << procs, shared_lock, update_lock, 
+                      /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
                                       exclusive_lock, memory, tick, 
                                       current_cmd >>
 
@@ -215,13 +209,12 @@ DropLocks(self) == /\ pc[self] = "DropLocks"
                       /\ shared_lock' = [shared_lock EXCEPT ![self] = FALSE]
                       /\ update_lock' = [update_lock EXCEPT ![self] = FALSE]
                    /\ pc' = [pc EXCEPT ![self] = "Done"]
-                   /\ UNCHANGED << procs, wal, version, memory, file_system, 
-                                   tick, current_cmd >>
+                   /\ UNCHANGED << procs, keys, wal, version, memory, 
+                                   file_system, tick, current_cmd >>
 
 db_process(self) == GetCommand(self) \/ Read(self) \/ UpdateLock(self)
                        \/ WriteMemory(self) \/ WriteFS(self)
-                       \/ ExclusiveLock(self) \/ ExecuteFlush(self)
-                       \/ DropLocks(self)
+                       \/ ExecuteFlush(self) \/ DropLocks(self)
 
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
@@ -230,12 +223,13 @@ Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
 Next == (\E self \in 0..N: db_process(self))
            \/ Terminating
 
-Spec == Init /\ [][Next]_vars
+Spec == /\ Init /\ [][Next]_vars
+        /\ \A self \in 0..N : SF_vars(db_process(self))
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION 
 =============================================================================
 \* Modification History
-\* Last modified Thu Jan 05 23:53:54 EST 2023 by adamwespiser
+\* Last modified Fri Jan 06 00:29:25 EST 2023 by adamwespiser
 \* Created Sat Dec 24 14:05:49 EST 2022 by adamwespiser

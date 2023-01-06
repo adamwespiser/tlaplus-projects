@@ -1,6 +1,6 @@
 ------------------------------- MODULE SEDB_1 -------------------------------
 EXTENDS Integers, Sequences, TLC, FiniteSets
-CONSTANTS N, KEYS
+CONSTANTS N, KEYS, NULL
 
 ASSUME N \in Nat \ {0}
 ASSUME N > 0
@@ -13,21 +13,21 @@ ASSUME KEYS > 0
 
 variables
   \* processes for database writers
-  procs = {i: i \in 1..N},
+  procs = {i: i \in 0..N},
   \* three tiered locking strategy
-  shared_lock = [t \in 1..N |-> FALSE],
-  update_lock = [t \in 1..N |-> FALSE],
-  exclusive_lock = [t \in 1..N |-> FALSE],
+  shared_lock = [i \in procs|-> FALSE],
+  update_lock = [i \in procs |-> FALSE],
+  exclusive_lock = [i \in procs |-> FALSE],
   \* our state
   wal = <<>>,
   version = 0,
-  memory = {},
-  file_system = {},
+  memory = [m \in procs |-> 0],
+  file_system = [k \in procs |-> memory],
   tick = 0;
 
 define
   \* defines the set of operations
-  Keys == 1..KEYS
+  Keys == 0..KEYS
   UpdateSet == {"inc", "dec"}
   WriteOps == [op: {"write"}, key: Keys, value: 1..3]
   UpdateOps == [op: {"update"}, key: Keys, value: {"inc", "dec"}]
@@ -70,7 +70,7 @@ macro rebuild_from_disk() begin
 end macro;
 
 
-process db_process \in 1..N
+process db_process \in 0..N
 variables current_cmd = "";
 begin
   GetCommand:
@@ -107,12 +107,12 @@ end process;
 
 
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "6e5e2751" /\ chksum(tla) = "8be0f62a")
+\* BEGIN TRANSLATION (chksum(pcal) = "56b77516" /\ chksum(tla) = "c9643ddf")
 VARIABLES procs, shared_lock, update_lock, exclusive_lock, wal, version, 
           memory, file_system, tick, pc
 
 (* define statement *)
-Keys == 1..KEYS
+Keys == 0..KEYS
 UpdateSet == {"inc", "dec"}
 WriteOps == [op: {"write"}, key: Keys, value: 1..3]
 UpdateOps == [op: {"update"}, key: Keys, value: {"inc", "dec"}]
@@ -126,20 +126,20 @@ VARIABLE current_cmd
 vars == << procs, shared_lock, update_lock, exclusive_lock, wal, version, 
            memory, file_system, tick, pc, current_cmd >>
 
-ProcSet == (1..N)
+ProcSet == (0..N)
 
 Init == (* Global variables *)
-        /\ procs = {i: i \in 1..N}
-        /\ shared_lock = [t \in 1..N |-> FALSE]
-        /\ update_lock = [t \in 1..N |-> FALSE]
-        /\ exclusive_lock = [t \in 1..N |-> FALSE]
+        /\ procs = {i: i \in 0..N}
+        /\ shared_lock = [i \in procs|-> FALSE]
+        /\ update_lock = [i \in procs |-> FALSE]
+        /\ exclusive_lock = [i \in procs |-> FALSE]
         /\ wal = <<>>
         /\ version = 0
-        /\ memory = {}
-        /\ file_system = {}
+        /\ memory = [m \in procs |-> 0]
+        /\ file_system = [k \in procs |-> memory]
         /\ tick = 0
         (* Process db_process *)
-        /\ current_cmd = [self \in 1..N |-> ""]
+        /\ current_cmd = [self \in 0..N |-> ""]
         /\ pc = [self \in ProcSet |-> "GetCommand"]
 
 GetCommand(self) == /\ pc[self] = "GetCommand"
@@ -227,7 +227,7 @@ db_process(self) == GetCommand(self) \/ Read(self) \/ UpdateLock(self)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
                /\ UNCHANGED vars
 
-Next == (\E self \in 1..N: db_process(self))
+Next == (\E self \in 0..N: db_process(self))
            \/ Terminating
 
 Spec == Init /\ [][Next]_vars
@@ -237,5 +237,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION 
 =============================================================================
 \* Modification History
-\* Last modified Mon Jan 02 16:33:51 EST 2023 by adamwespiser
+\* Last modified Thu Jan 05 23:53:54 EST 2023 by adamwespiser
 \* Created Sat Dec 24 14:05:49 EST 2022 by adamwespiser

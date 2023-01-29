@@ -23,6 +23,7 @@ variables
   wal = <<>>,
   version = 0,
   memory = [m \in keys |-> 0],
+  eternal_memory = [m \in keys |-> 0],
   file_system = [k \in procs |-> memory],
   tick = 0;
 
@@ -35,8 +36,12 @@ define
   ReadOps == [op: {"read"}, key: Keys, value: {"none"}]
   Ops ==  ReadOps \union UpdateOps \union WriteOps
   LockEmpty(lock) == \A x \in DOMAIN lock: ~lock[x]
-  SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ (x = s)
+  SelfHasLock(lock, s) == \A x \in DOMAIN lock: (x /= s /\ ~lock[x]) \/ (x = s /\ lock[x])
+
+  \* temporal invariant
+  AlwaysConsistency == \E k \in Keys: k \in memory /\ [](memory[k] = eternal_memory[k])
 end define;
+  
 
 
 macro write_to_wal(cmd) begin
@@ -64,12 +69,31 @@ end macro;
 macro rebuild_from_disk() begin
   memory := file_system[version];
   while Len(wal) > 0 do
-    replay_message := Head(wal) ||
+    replay_message := Head(wal);
     wal := Tail(wal);
     eval_cmd_in_mem(replay_message);
   end while;
 end macro;
 
+
+fair+ process memory_wipe \in {"wipe"}
+variables replay_message = "";
+begin
+  MemoryProces:
+    either
+     PowerOffThenOn:
+       \*rebuild_from_disk();
+       memory := file_system[version];
+       ReplayOnStartUp:
+         while Len(wal) > 0 do
+            replay_message := Head(wal);
+            wal := Tail(wal);
+            eval_cmd_in_mem(replay_message);
+         end while;
+     or
+       skip;
+    end either;
+end process;
 
 fair+ process db_process \in 0..N
 variables current_cmd = "";
@@ -87,14 +111,15 @@ begin
             await LockEmpty(update_lock) /\ LockEmpty(exclusive_lock);
             update_lock[self] := TRUE;
         WriteMemory:
-            tick := tick + 1;
+            \* tick := tick + 1;
             eval_cmd_in_mem(current_cmd);
         WriteFS:
-            tick := tick +1;
+            \* tick := tick +1;
             write_to_wal(current_cmd);
- \*       ExclusiveLock:
- \*           await LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock);
- \*           exclusive_lock[self] := TRUE;
+        \* "no steal & force" style
+        ExclusiveLock:
+            await LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock);
+            exclusive_lock[self] := TRUE;
         ExecuteFlush:
             flush_to_disk();
     end if;
@@ -104,13 +129,10 @@ begin
        exclusive_lock[self] := FALSE;
 end process;
 
-
-
-
 end algorithm; *)
-\* BEGIN TRANSLATION (chksum(pcal) = "9e2069dd" /\ chksum(tla) = "5e7ec91f")
+\* BEGIN TRANSLATION (chksum(pcal) = "3c3a4ccd" /\ chksum(tla) = "28e327f7")
 VARIABLES procs, keys, shared_lock, update_lock, exclusive_lock, wal, version, 
-          memory, file_system, tick, pc
+          memory, eternal_memory, file_system, tick, pc
 
 (* define statement *)
 Keys == 0..KEYS
@@ -120,14 +142,18 @@ UpdateOps == [op: {"update"}, key: Keys, value: {"inc", "dec"}]
 ReadOps == [op: {"read"}, key: Keys, value: {"none"}]
 Ops ==  ReadOps \union UpdateOps \union WriteOps
 LockEmpty(lock) == \A x \in DOMAIN lock: ~lock[x]
-SelfHasLock(lock, s) == \A x \in DOMAIN lock: ~lock[x] /\ (x = s)
+SelfHasLock(lock, s) == \A x \in DOMAIN lock: (x /= s /\ ~lock[x]) \/ (x = s /\ lock[x])
 
-VARIABLE current_cmd
+
+AlwaysConsistency == \E k \in Keys: k \in memory /\ [](memory[k] = eternal_memory[k])
+
+VARIABLES replay_message, current_cmd
 
 vars == << procs, keys, shared_lock, update_lock, exclusive_lock, wal, 
-           version, memory, file_system, tick, pc, current_cmd >>
+           version, memory, eternal_memory, file_system, tick, pc, 
+           replay_message, current_cmd >>
 
-ProcSet == (0..N)
+ProcSet == ({"wipe"}) \cup (0..N)
 
 Init == (* Global variables *)
         /\ procs = {i: i \in 0..N}
@@ -138,11 +164,59 @@ Init == (* Global variables *)
         /\ wal = <<>>
         /\ version = 0
         /\ memory = [m \in keys |-> 0]
+        /\ eternal_memory = [m \in keys |-> 0]
         /\ file_system = [k \in procs |-> memory]
         /\ tick = 0
+        (* Process memory_wipe *)
+        /\ replay_message = [self \in {"wipe"} |-> ""]
         (* Process db_process *)
         /\ current_cmd = [self \in 0..N |-> ""]
-        /\ pc = [self \in ProcSet |-> "GetCommand"]
+        /\ pc = [self \in ProcSet |-> CASE self \in {"wipe"} -> "MemoryProces"
+                                        [] self \in 0..N -> "GetCommand"]
+
+MemoryProces(self) == /\ pc[self] = "MemoryProces"
+                      /\ \/ /\ pc' = [pc EXCEPT ![self] = "PowerOffThenOn"]
+                         \/ /\ TRUE
+                            /\ pc' = [pc EXCEPT ![self] = "Done"]
+                      /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
+                                      exclusive_lock, wal, version, memory, 
+                                      eternal_memory, file_system, tick, 
+                                      replay_message, current_cmd >>
+
+PowerOffThenOn(self) == /\ pc[self] = "PowerOffThenOn"
+                        /\ memory' = file_system[version]
+                        /\ pc' = [pc EXCEPT ![self] = "ReplayOnStartUp"]
+                        /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
+                                        exclusive_lock, wal, version, 
+                                        eternal_memory, file_system, tick, 
+                                        replay_message, current_cmd >>
+
+ReplayOnStartUp(self) == /\ pc[self] = "ReplayOnStartUp"
+                         /\ IF Len(wal) > 0
+                               THEN /\ replay_message' = [replay_message EXCEPT ![self] = Head(wal)]
+                                    /\ wal' = Tail(wal)
+                                    /\ IF replay_message'[self].op = "update" /\ replay_message'[self].key \in DOMAIN memory
+                                          THEN /\ IF replay_message'[self].value = "dec"
+                                                     THEN /\ memory' = [memory EXCEPT ![replay_message'[self].key] = memory[replay_message'[self].key] - 1]
+                                                     ELSE /\ IF replay_message'[self].value = "inc"
+                                                                THEN /\ memory' = [memory EXCEPT ![replay_message'[self].key] = memory[replay_message'[self].key] + 1]
+                                                                ELSE /\ TRUE
+                                                                     /\ UNCHANGED memory
+                                          ELSE /\ IF replay_message'[self].op = "write"
+                                                     THEN /\ memory' = [memory EXCEPT ![replay_message'[self].key] = replay_message'[self].value]
+                                                     ELSE /\ TRUE
+                                                          /\ UNCHANGED memory
+                                    /\ pc' = [pc EXCEPT ![self] = "ReplayOnStartUp"]
+                               ELSE /\ pc' = [pc EXCEPT ![self] = "Done"]
+                                    /\ UNCHANGED << wal, memory, 
+                                                    replay_message >>
+                         /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
+                                         exclusive_lock, version, 
+                                         eternal_memory, file_system, tick, 
+                                         current_cmd >>
+
+memory_wipe(self) == MemoryProces(self) \/ PowerOffThenOn(self)
+                        \/ ReplayOnStartUp(self)
 
 GetCommand(self) == /\ pc[self] = "GetCommand"
                     /\ \E c \in Ops:
@@ -152,25 +226,27 @@ GetCommand(self) == /\ pc[self] = "GetCommand"
                           ELSE /\ pc' = [pc EXCEPT ![self] = "UpdateLock"]
                     /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
                                     exclusive_lock, wal, version, memory, 
-                                    file_system, tick >>
+                                    eternal_memory, file_system, tick, 
+                                    replay_message >>
 
 Read(self) == /\ pc[self] = "Read"
               /\ LockEmpty(exclusive_lock)
               /\ shared_lock' = [shared_lock EXCEPT ![self] = TRUE]
               /\ pc' = [pc EXCEPT ![self] = "DropLocks"]
               /\ UNCHANGED << procs, keys, update_lock, exclusive_lock, wal, 
-                              version, memory, file_system, tick, current_cmd >>
+                              version, memory, eternal_memory, file_system, 
+                              tick, replay_message, current_cmd >>
 
 UpdateLock(self) == /\ pc[self] = "UpdateLock"
                     /\ LockEmpty(update_lock) /\ LockEmpty(exclusive_lock)
                     /\ update_lock' = [update_lock EXCEPT ![self] = TRUE]
                     /\ pc' = [pc EXCEPT ![self] = "WriteMemory"]
                     /\ UNCHANGED << procs, keys, shared_lock, exclusive_lock, 
-                                    wal, version, memory, file_system, tick, 
+                                    wal, version, memory, eternal_memory, 
+                                    file_system, tick, replay_message, 
                                     current_cmd >>
 
 WriteMemory(self) == /\ pc[self] = "WriteMemory"
-                     /\ tick' = tick + 1
                      /\ IF current_cmd[self].op = "update" /\ current_cmd[self].key \in DOMAIN memory
                            THEN /\ IF current_cmd[self].value = "dec"
                                       THEN /\ memory' = [memory EXCEPT ![current_cmd[self].key] = memory[current_cmd[self].key] - 1]
@@ -184,16 +260,26 @@ WriteMemory(self) == /\ pc[self] = "WriteMemory"
                                            /\ UNCHANGED memory
                      /\ pc' = [pc EXCEPT ![self] = "WriteFS"]
                      /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
-                                     exclusive_lock, wal, version, file_system, 
-                                     current_cmd >>
+                                     exclusive_lock, wal, version, 
+                                     eternal_memory, file_system, tick, 
+                                     replay_message, current_cmd >>
 
 WriteFS(self) == /\ pc[self] = "WriteFS"
-                 /\ tick' = tick +1
                  /\ wal' = Append(wal, current_cmd[self])
-                 /\ pc' = [pc EXCEPT ![self] = "ExecuteFlush"]
+                 /\ pc' = [pc EXCEPT ![self] = "ExclusiveLock"]
                  /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
-                                 exclusive_lock, version, memory, file_system, 
-                                 current_cmd >>
+                                 exclusive_lock, version, memory, 
+                                 eternal_memory, file_system, tick, 
+                                 replay_message, current_cmd >>
+
+ExclusiveLock(self) == /\ pc[self] = "ExclusiveLock"
+                       /\ LockEmpty(shared_lock) /\ SelfHasLock(update_lock, self) /\ LockEmpty(exclusive_lock)
+                       /\ exclusive_lock' = [exclusive_lock EXCEPT ![self] = TRUE]
+                       /\ pc' = [pc EXCEPT ![self] = "ExecuteFlush"]
+                       /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
+                                       wal, version, memory, eternal_memory, 
+                                       file_system, tick, replay_message, 
+                                       current_cmd >>
 
 ExecuteFlush(self) == /\ pc[self] = "ExecuteFlush"
                       /\ /\ file_system' = [file_system EXCEPT ![version] = memory]
@@ -201,8 +287,8 @@ ExecuteFlush(self) == /\ pc[self] = "ExecuteFlush"
                          /\ wal' = <<>>
                       /\ pc' = [pc EXCEPT ![self] = "DropLocks"]
                       /\ UNCHANGED << procs, keys, shared_lock, update_lock, 
-                                      exclusive_lock, memory, tick, 
-                                      current_cmd >>
+                                      exclusive_lock, memory, eternal_memory, 
+                                      tick, replay_message, current_cmd >>
 
 DropLocks(self) == /\ pc[self] = "DropLocks"
                    /\ /\ exclusive_lock' = [exclusive_lock EXCEPT ![self] = FALSE]
@@ -210,20 +296,24 @@ DropLocks(self) == /\ pc[self] = "DropLocks"
                       /\ update_lock' = [update_lock EXCEPT ![self] = FALSE]
                    /\ pc' = [pc EXCEPT ![self] = "Done"]
                    /\ UNCHANGED << procs, keys, wal, version, memory, 
-                                   file_system, tick, current_cmd >>
+                                   eternal_memory, file_system, tick, 
+                                   replay_message, current_cmd >>
 
 db_process(self) == GetCommand(self) \/ Read(self) \/ UpdateLock(self)
                        \/ WriteMemory(self) \/ WriteFS(self)
-                       \/ ExecuteFlush(self) \/ DropLocks(self)
+                       \/ ExclusiveLock(self) \/ ExecuteFlush(self)
+                       \/ DropLocks(self)
 
 (* Allow infinite stuttering to prevent deadlock on termination. *)
 Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
                /\ UNCHANGED vars
 
-Next == (\E self \in 0..N: db_process(self))
+Next == (\E self \in {"wipe"}: memory_wipe(self))
+           \/ (\E self \in 0..N: db_process(self))
            \/ Terminating
 
 Spec == /\ Init /\ [][Next]_vars
+        /\ \A self \in {"wipe"} : SF_vars(memory_wipe(self))
         /\ \A self \in 0..N : SF_vars(db_process(self))
 
 Termination == <>(\A self \in ProcSet: pc[self] = "Done")
@@ -231,5 +321,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 \* END TRANSLATION 
 =============================================================================
 \* Modification History
-\* Last modified Fri Jan 06 00:29:25 EST 2023 by adamwespiser
+\* Last modified Sat Jan 28 23:33:19 EST 2023 by adamwespiser
 \* Created Sat Dec 24 14:05:49 EST 2022 by adamwespiser
